@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Man 3D Runner</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #a0d8ef;
+            user-select: none;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        #score-board {
+            padding: 20px;
+            font-size: 24px;
+            color: white;
+            text-shadow: 2px 2px 4px #000;
+            font-weight: bold;
+        }
+
+        #game-over-screen, #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            pointer-events: auto;
+            z-index: 10;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        h1 {
+            font-size: 48px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #ff9800;
+            text-shadow: 2px 2px 0px #fff;
+        }
+
+        p {
+            font-size: 18px;
+            margin-bottom: 30px;
+        }
+
+        button {
+            padding: 15px 40px;
+            font-size: 20px;
+            background: #ff9800;
+            border: none;
+            color: white;
+            cursor: pointer;
+            border-radius: 50px;
+            transition: transform 0.2s, background 0.2s;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        button:hover {
+            transform: scale(1.1);
+            background: #ffb74d;
+        }
+
+        .controls-hint {
+            margin-top: 20px;
+            font-size: 14px;
+            opacity: 0.8;
+            background: rgba(255,255,255,0.1);
+            padding: 10px;
+            border-radius: 8px;
+        }
+
+        .key {
+            display: inline-block;
+            background: #eee;
+            color: #333;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin: 0 2px;
+        }
+    </style>
+    <!-- Import Maps for Three.js -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="game-container">
+        <!-- Start Screen -->
+        <div id="start-screen">
+            <h1>Robot Runner</h1>
+            <p>Dodge obstacles in the city streets!</p>
+            <button id="start-btn">START GAME</button>
+            <div class="controls-hint">
+                Controls: <span class="key">Left</span> <span class="key">Right</span> to Move | <span class="key">Space</span> to Jump
+            </div>
+        </div>
+
+        <!-- Game Over Screen -->
+        <div id="game-over-screen" class="hidden">
+            <h1>Game Over</h1>
+            <p>Score: <span id="final-score">0</span></p>
+            <button id="restart-btn">TRY AGAIN</button>
+        </div>
+
+        <!-- HUD -->
+        <div id="ui-layer">
+            <div id="score-board">Score: <span id="score">0</span></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // --- Game Configuration ---
+        const CONFIG = {
+            laneWidth: 3,
+            speed: 15,
+            jumpForce: 12,
+            gravity: -30,
+            obstacleSpawnRate: 1.5 // seconds
+        };
+
+        // --- Global Variables ---
+        let scene, camera, renderer, clock;
+        let player, mixer; 
+        let runAction, idleAction;
+        let obstacles = [];
+        let isGameRunning = false;
+        let score = 0;
+        let scoreElement = document.getElementById('score');
+        let finalScoreElement = document.getElementById('final-score');
+        
+        // Physics / Movement state
+        let currentLane = 0; // -1 (left), 0 (center), 1 (right)
+        let playerVelocityY = 0;
+        let isJumping = false;
+        let playerHeight = 0; // current Y position
+        
+        // World Objects
+        let floor;
+        let obstacleMeshRef; // Template for obstacles
+
+        // Initialize
+        function init() {
+            // Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xa0d8ef);
+            scene.fog = new THREE.Fog(0xa0d8ef, 10, 50);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 5, 8);
+            camera.lookAt(0, 2, -5);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.getElementById('game-container').appendChild(renderer.domElement);
+
+            // Lights
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 2);
+            hemiLight.position.set(0, 20, 0);
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+            dirLight.position.set(-3, 10, -10);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.top = 10;
+            dirLight.shadow.camera.bottom = -10;
+            dirLight.shadow.camera.left = -10;
+            dirLight.shadow.camera.right = 10;
+            scene.add(dirLight);
+
+            // Floor (Street)
+            const floorGeo = new THREE.PlaneGeometry(100, 1000);
+            const floorMat = new THREE.MeshPhongMaterial({ 
+                color: 0x333333,
+                depthWrite: false
+            });
+            floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            // Lane Markers (Stripes)
+            const stripeGeo = new THREE.PlaneGeometry(0.2, 1000);
+            const stripeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            
+            const leftLine = new THREE.Mesh(stripeGeo, stripeMat);
+            leftLine.rotation.x = -Math.PI / 2;
+            leftLine.position.set(-CONFIG.laneWidth/2, 0.01, 0);
+            scene.add(leftLine);
+
+            const rightLine = new THREE.Mesh(stripeGeo, stripeMat);
+            rightLine.rotation.x = -Math.PI / 2;
+            rightLine.position.set(CONFIG.laneWidth/2, 0.01, 0);
+            scene.add(rightLine);
+
+            // Setup Obstacle Template (Box)
+            const obsGeo = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+            const obsMat = new THREE.MeshPhongMaterial({ color: 0xe74c3c });
+            obstacleMeshRef = new THREE.Mesh(obsGeo, obsMat);
+            obstacleMeshRef.castShadow = true;
+            obstacleMeshRef.receiveShadow = true;
+
+            // Load Character
+            loadPlayerModel();
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize);
+            document.addEventListener('keydown', handleInput);
+            document.getElementById('start-btn').addEventListener('click', startGame);
+            document.getElementById('restart-btn').addEventListener('click', resetGame);
+
+            clock = new THREE.Clock();
+            animate();
+        }
+
+        function loadPlayerModel() {
+            const loader = new GLTFLoader();
+            // This is the specific model requested
+            loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', function (gltf) {
+                player = gltf.scene;
+                player.traverse(function (object) {
+                    if (object.isMesh) object.castShadow = true;
+                });
+
+                // Scale and Position
+                player.scale.set(1.5, 1.5, 1.5); 
+                player.position.y = 0;
+                player.rotation.y = Math.PI; // Face away from camera
+
+                scene.add(player);
+
+                // Animations
+                mixer = new THREE.AnimationMixer(player);
+                const animations = gltf.animations;
+                
+                // Soldier has: 0: Idle, 1: Run, 2: Walk (usually)
+                // We will find them by name to be safe
+                const runClip = THREE.AnimationClip.findByName(animations, 'Run');
+                const idleClip = THREE.AnimationClip.findByName(animations, 'Idle');
+
+                runAction = mixer.clipAction(runClip);
+                idleAction = mixer.clipAction(idleClip);
+
+                idleAction.play(); // Start idle
+            }, undefined, function(error) {
+                console.error("Error loading model", error);
+                // Fallback if model fails to load
+                const geo = new THREE.BoxGeometry(1, 2, 1);
+                const mat = new THREE.MeshStandardMaterial({color: 0x00ff00});
+                player = new THREE.Mesh(geo, mat);
+                player.position.y = 1;
+                player.castShadow = true;
+                scene.add(player);
+            });
+        }
+
+        function spawnObstacle() {
+            if (!isGameRunning) return;
+
+            // Random Lane: -1, 0, or 1
+            const laneIndex = Math.floor(Math.random() * 3) - 1; 
+            const obstacle = obstacleMeshRef.clone();
+            
+            // X: Lane position
+            obstacle.position.x = laneIndex * CONFIG.laneWidth;
+            // Y: On ground (height is 1.5, so center is 0.75)
+            obstacle.position.y = 0.75; 
+            // Z: Spawn far ahead (fog hides it)
+            obstacle.position.z = -50; 
+
+            scene.add(obstacle);
+            obstacles.push(obstacle);
+        }
+
+        function handleInput(event) {
+            if (!isGameRunning) return;
+
+            switch(event.code) {
+                case 'ArrowLeft':
+                case 'KeyA':
+                    if (currentLane > -1) currentLane--;
+                    break;
+                case 'ArrowRight':
+                case 'KeyD':
+                    if (currentLane < 1) currentLane++;
+                    break;
+                case 'Space':
+                case 'ArrowUp':
+                case 'KeyW':
+                    if (!isJumping) {
+                        isJumping = true;
+                        playerVelocityY = CONFIG.jumpForce;
+                    }
+                    break;
+            }
+        }
+
+        function updatePhysics(delta) {
+            if (!player) return;
+
+            // 1. Move Player X (Lane switching interpolation)
+            const targetX = currentLane * CONFIG.laneWidth;
+            // Smooth lerp for X movement
+            player.position.x += (targetX - player.position.x) * 10 * delta;
+
+            // 2. Jump Physics (Y axis)
+            if (isJumping) {
+                player.position.y += playerVelocityY * delta;
+                playerVelocityY += CONFIG.gravity * delta;
+
+                if (player.position.y <= 0) {
+                    player.position.y = 0;
+                    isJumping = false;
+                    playerVelocityY = 0;
+                }
+            }
+        }
+
+        function updateObstacles(delta) {
+            const speed = CONFIG.speed * delta;
+            
+            // Iterate backwards to allow removal
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.position.z += CONFIG.speed * delta; // Move towards camera (+Z)
+
+                // Collision Detection
+                // Simple AABB logic
+                const pBox = new THREE.Box3().setFromObject(player);
+                // Shrink player box slightly to be forgiving
+                pBox.expandByScalar(-0.3); 
+                
+                const oBox = new THREE.Box3().setFromObject(obs);
+
+                if (pBox.intersectsBox(oBox)) {
+                    gameOver();
+                }
+
+                // Remove if passed camera
+                if (obs.position.z > 10) {
+                    scene.remove(obs);
+                    obstacles.splice(i, 1);
+                    score += 10;
+                    scoreElement.innerText = score;
+                }
+            }
+        }
+
+        // Interval for spawning
+        let spawnTimer = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+
+            if (mixer) mixer.update(delta);
+
+            if (isGameRunning) {
+                updatePhysics(delta);
+                updateObstacles(delta);
+                
+                // Spawn logic
+                spawnTimer += delta;
+                if (spawnTimer > CONFIG.obstacleSpawnRate) {
+                    spawnObstacle();
+                    // Make it slightly harder over time by reducing spawn interval slightly
+                    spawnTimer = 0;
+                }
+            }
+            
+            // Simulate moving floor by animating texture (optional) or just rely on obstacles moving
+            // Here, since the floor is a solid color, we don't need to scroll texture, 
+            // the movement of obstacles creates the illusion of speed.
+
+            renderer.render(scene, camera);
+        }
+
+        function startGame() {
+            document.getElementById('start-screen').classList.add('hidden');
+            score = 0;
+            scoreElement.innerText = score;
+            isGameRunning = true;
+            
+            // Animation Switch
+            if (runAction && idleAction) {
+                idleAction.stop();
+                runAction.play();
+            }
+        }
+
+        function resetGame() {
+            // Clear obstacles
+            obstacles.forEach(obs => scene.remove(obs));
+            obstacles = [];
+            
+            document.getElementById('game-over-screen').classList.add('hidden');
+            currentLane = 0;
+            if(player) {
+                player.position.x = 0;
+                player.position.y = 0;
+            }
+            
+            score = 0;
+            scoreElement.innerText = score;
+            spawnTimer = 0;
+            isGameRunning = true;
+
+             // Animation Switch
+             if (runAction && idleAction) {
+                idleAction.stop();
+                runAction.reset();
+                runAction.play();
+            }
+        }
+
+        function gameOver() {
+            isGameRunning = false;
+            finalScoreElement.innerText = score;
+            document.getElementById('game-over-screen').classList.remove('hidden');
+
+            if (runAction && idleAction) {
+                runAction.stop();
+                idleAction.play();
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Start initialization
+        init();
+
+    </script>
+</body>
+</html>
